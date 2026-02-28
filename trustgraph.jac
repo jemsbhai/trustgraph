@@ -17,6 +17,7 @@ import from bridge.confidence {
     build_jsonld_claim
 }
 import json;
+import re;
 import from datetime { datetime, timezone }
 
 glob llm = Model(model_name="gemini/gemini-2.5-flash");
@@ -82,11 +83,12 @@ def decompose_query(question: str) -> list[str]
     by llm();
 
 """Given a claim and text from a source, extract the key evidence.
-Return a JSON string with fields:
+Return ONLY a valid JSON object (no markdown, no extra text) with these fields:
 - "evidence": the specific text that supports or contradicts the claim
 - "supports": true if the evidence supports the claim, false if it contradicts
 - "relevance": a float 0-1 indicating how directly relevant this evidence is
-- "confidence": a float 0-1 indicating how confident you are in this assessment"""
+- "confidence": a float 0-1 indicating how confident you are in this assessment
+Example: {"evidence": "Studies show X", "supports": true, "relevance": 0.8, "confidence": 0.85}"""
 def extract_evidence(claim: str, source_text: str) -> str
     by llm();
 
@@ -106,6 +108,63 @@ def write_summary(question: str, assessed_claims: list[str]) -> str
 Return just the search query string, optimized for finding research and data."""
 def claim_to_search_query(claim: str) -> str
     by llm();
+
+# ──────────────────────────────────────────────
+# JSON Parsing Helper
+# ──────────────────────────────────────────────
+
+def parse_evidence_json(raw: str) -> dict {
+    """Robustly parse LLM evidence output, handling markdown fences and extra text."""
+    defaults = {"evidence": raw, "supports": True, "relevance": 0.5, "confidence": 0.5};
+
+    # Sanitize: replace non-breaking spaces and other unicode whitespace
+    raw = raw.replace("\xa0", " ").replace("\u200b", "").replace("\u2009", " ").replace("\u202f", " ");
+
+    # 1. Try direct parse
+    try {
+        return json.loads(raw);
+    } except Exception {
+        _pass = 0;
+    }
+
+    # 2. Strip markdown code fences
+    try {
+        cleaned = raw.strip();
+        if cleaned.startswith("```") {
+            # Remove opening fence (```json or ```)
+            first_newline = cleaned.find("\n");
+            if first_newline > 0 {
+                cleaned = cleaned[first_newline + 1:];
+            }
+            # Remove closing fence
+            if cleaned.rstrip().endswith("```") {
+                cleaned = cleaned.rstrip()[:-3].rstrip();
+            }
+        }
+        return json.loads(cleaned);
+    } except Exception {
+        _pass = 0;
+    }
+
+    # 3. Try to find a JSON object containing "evidence" in the raw text
+    try {
+        # Find the first { and last } to extract the JSON
+        start = raw.find("{");
+        end = raw.rfind("}");
+        if start >= 0 and end > start {
+            candidate = raw[start:end + 1];
+            parsed = json.loads(candidate);
+            if "evidence" in parsed or "confidence" in parsed {
+                return parsed;
+            }
+        }
+    } except Exception {
+        _pass = 0;
+    }
+
+    print(f"        WARNING: Could not parse evidence JSON. Raw[0:120]: {raw[:120]}");
+    return defaults;
+}
 
 # ──────────────────────────────────────────────
 # Source Trust Heuristic
@@ -181,7 +240,7 @@ walker TrustGraphAgent {
         all_opinions: list = [];
         all_conflicts: list = [];
         assessed_claims: list = [];
-        all_sources_per_claim: list = [];  # list of list of source dicts
+        all_sources_per_claim: list = [];
 
         for ci in range(len(claim_nodes)) {
             claim = claim_nodes[ci];
@@ -215,14 +274,9 @@ walker TrustGraphAgent {
 
                 # Extract evidence using byLLM
                 raw = extract_evidence(claim.text, r["content"]);
-                # Parse the LLM response
-                ev_data = {"evidence": raw, "supports": True, "relevance": 0.5, "confidence": 0.5};
-                try {
-                    parsed = json.loads(raw);
-                    ev_data = parsed;
-                } except Exception as e {
-                    ev_data = ev_data;
-                }
+
+                # Robust JSON parsing
+                ev_data = parse_evidence_json(raw);
 
                 ev = Evidence(
                     text=str(ev_data.get("evidence", raw))[:300],
@@ -252,23 +306,20 @@ walker TrustGraphAgent {
                 });
 
                 # Build opinion with trust discount
-                # evidence_weight=1.0 per piece; fusion handles combining
                 raw_opinion = scalar_to_opinion(ev.confidence_raw);
                 discounted = apply_trust_discount(raw_opinion, trust);
 
                 if ev.supports_claim {
-                    # Supporting: high confidence -> high belief in claim
                     evidence_opinions.append(discounted);
                     supporting_opinions.append(discounted);
                 } else {
-                    # Contradicting: high confidence in contradiction ->
-                    # high DISBELIEF in claim. Must flip b<->d.
                     flipped = flip_opinion(discounted);
                     evidence_opinions.append(flipped);
                     contradicting_opinions.append(flipped);
                 }
 
-                print(f"        [{r['title'][:40]}] trust={trust} conf={ev.confidence_raw}");
+                sup_label = "supports" if ev.supports_claim else "CONTRADICTS";
+                print(f"        [{r['title'][:40]}] trust={trust} conf={ev.confidence_raw:.2f} {sup_label}");
             }
 
             # ── STEP 4: SCORE ──
@@ -288,7 +339,7 @@ walker TrustGraphAgent {
                 print(f"      No evidence found.");
             }
 
-            # Detect within-claim conflicts (supporting vs contradicting evidence)
+            # Detect within-claim conflicts
             claim_conflict = detect_conflicts_within_claim(
                 supporting_opinions, contradicting_opinions, 0.2
             );
@@ -299,7 +350,7 @@ walker TrustGraphAgent {
                     "num_supporting": claim_conflict["num_supporting"],
                     "num_contradicting": claim_conflict["num_contradicting"]
                 });
-                print(f"      ⚡ CONFLICT: {claim_conflict['num_supporting']} sources support, {claim_conflict['num_contradicting']} contradict (degree={claim_conflict['conflict_degree']})");
+                print(f"      CONFLICT: {claim_conflict['num_supporting']} sources support, {claim_conflict['num_contradicting']} contradict (degree={claim_conflict['conflict_degree']})");
             }
 
             all_sources_per_claim.append(claim_sources);
@@ -316,8 +367,6 @@ walker TrustGraphAgent {
             );
             print(f"      Assessment: {assessment[:100]}...\n");
         }
-
-        # Conflicts already collected per-claim above (within-claim detection)
 
         # ── STEP 5: REPORT ──
         print(f"[5/5] REPORT — Generating summary...\n");
@@ -365,8 +414,8 @@ walker TrustGraphAgent {
         if len(all_conflicts) > 0 {
             print("  CONFLICTS DETECTED:");
             for conf in all_conflicts {
-                print(f"    - {conf['claims'][0]}... vs {conf['claims'][1]}...");
-                print(f"      Conflict degree: {conf['conflict_degree']}");
+                print(f"    - {conf['claim']}");
+                print(f"      {conf['num_supporting']} support vs {conf['num_contradicting']} contradict (degree={conf['conflict_degree']})");
             }
             print("");
         }
