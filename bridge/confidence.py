@@ -15,27 +15,56 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-def scalar_to_opinion(confidence: float, source_count: int = 1) -> Opinion:
+def scalar_to_opinion(confidence: float, evidence_weight: float = 1.0) -> Opinion:
     """Convert a scalar confidence [0,1] into a Subjective Logic opinion.
 
-    With more sources the uncertainty is lower (more evidence).
+    Args:
+        confidence: LLM-assessed confidence in [0, 1].
+        evidence_weight: How much evidence this represents (default 1.0).
+            Higher values reduce uncertainty (e.g. a meta-analysis = 2.0).
+            For individual evidence pieces, always use 1.0.
+            Fusion handles combining multiple pieces.
+
+    The mapping:
+        - Base uncertainty = 0.3 for weight=1.0 (a single source still
+          has meaningful uncertainty, but P can reach 0.85 for conf=1.0)
+        - Remaining probability mass split by confidence ratio
+        - b + d + u = 1 always holds
     """
-    # Uncertainty decreases with more sources
-    u = max(0.05, 1.0 / (source_count + 1))
+    # Uncertainty: decreases with evidence weight, floor at 0.05
+    u = max(0.05, 0.3 / evidence_weight)
     remaining = 1.0 - u
 
-    if confidence >= 0.5:
-        b = remaining * confidence
-        d = remaining * (1.0 - confidence)
-    else:
-        b = remaining * confidence
-        d = remaining * (1.0 - confidence)
+    b = remaining * confidence
+    d = remaining * (1.0 - confidence)
 
     return Opinion(belief=b, disbelief=d, uncertainty=u, base_rate=0.5)
 
 
+def flip_opinion(op: Opinion) -> Opinion:
+    """Flip an opinion: swap belief and disbelief.
+
+    Use this when evidence CONTRADICTS a claim. The LLM's confidence
+    in the contradiction (high belief) should map to high disbelief
+    in the claim itself. Without this flip, supporting and contradicting
+    evidence both have high belief and pairwise_conflict sees no disagreement.
+    """
+    return Opinion(
+        belief=op.disbelief,
+        disbelief=op.belief,
+        uncertainty=op.uncertainty,
+        base_rate=op.base_rate
+    )
+
+
 def fuse_evidence(opinions: list[Opinion]) -> Opinion:
-    """Fuse multiple opinions using cumulative fusion."""
+    """Fuse multiple opinions using cumulative fusion.
+
+    Each opinion represents one piece of evidence. Cumulative fusion
+    reduces uncertainty as more independent sources agree, and balances
+    belief/disbelief when sources disagree. This is the correct way
+    to combine evidence — NOT inflating source_count per piece.
+    """
     if not opinions:
         return Opinion(belief=0.0, disbelief=0.0, uncertainty=1.0, base_rate=0.5)
     if len(opinions) == 1:
@@ -50,7 +79,12 @@ def fuse_evidence(opinions: list[Opinion]) -> Opinion:
 def apply_trust_discount(opinion: Opinion, source_trust: float) -> Opinion:
     """Discount an opinion by the trustworthiness of its source.
 
-    source_trust is in [0,1] — higher means more trusted.
+    source_trust in [0, 1]:
+        1.0 = fully trusted (opinion unchanged)
+        0.0 = completely untrusted (opinion becomes pure uncertainty)
+
+    This implements Jøsang's trust discount operator: the recommender's
+    trust opinion modulates the evidence opinion.
     """
     trust_op = Opinion(
         belief=source_trust,
@@ -61,10 +95,55 @@ def apply_trust_discount(opinion: Opinion, source_trust: float) -> Opinion:
     return trust_discount(trust_op, opinion)
 
 
+def detect_conflicts_within_claim(
+    supporting_opinions: list[Opinion],
+    contradicting_opinions: list[Opinion],
+    threshold: float = 0.2
+) -> dict | None:
+    """Detect conflict WITHIN a single claim between supporting and contradicting evidence.
+
+    This is semantically correct: we compare evidence FOR a claim against
+    evidence AGAINST the same claim. Cross-claim comparison is meaningless
+    because different claims are about different propositions.
+
+    Returns a conflict report if the two sides disagree above threshold,
+    or None if no significant conflict.
+    """
+    if not supporting_opinions or not contradicting_opinions:
+        return None
+
+    # Fuse all supporting evidence into one opinion
+    fused_for = fuse_evidence(supporting_opinions)
+    # Fuse all contradicting evidence into one opinion
+    fused_against = fuse_evidence(contradicting_opinions)
+
+    # Measure conflict between the two sides
+    conf = pairwise_conflict(fused_for, fused_against)
+
+    if conf > threshold:
+        return {
+            "conflict_degree": round(float(conf), 4),
+            "supporting_opinion": {
+                "belief": round(float(fused_for.belief), 4),
+                "disbelief": round(float(fused_for.disbelief), 4),
+                "uncertainty": round(float(fused_for.uncertainty), 4),
+            },
+            "contradicting_opinion": {
+                "belief": round(float(fused_against.belief), 4),
+                "disbelief": round(float(fused_against.disbelief), 4),
+                "uncertainty": round(float(fused_against.uncertainty), 4),
+            },
+            "num_supporting": len(supporting_opinions),
+            "num_contradicting": len(contradicting_opinions),
+        }
+    return None
+
+
 def detect_conflicts(opinions: list[Opinion], threshold: float = 0.3) -> list[dict]:
     """Detect pairwise conflicts among opinions.
 
-    Returns list of conflict reports for pairs exceeding threshold.
+    DEPRECATED for cross-claim use. Kept for backward compatibility.
+    Prefer detect_conflicts_within_claim() for semantically correct conflict detection.
     """
     conflicts = []
     for i in range(len(opinions)):
@@ -73,16 +152,16 @@ def detect_conflicts(opinions: list[Opinion], threshold: float = 0.3) -> list[di
             if conf > threshold:
                 conflicts.append({
                     "pair": (i, j),
-                    "conflict_degree": round(conf, 4),
+                    "conflict_degree": round(float(conf), 4),
                     "opinion_a": {
-                        "belief": round(opinions[i].belief, 4),
-                        "disbelief": round(opinions[i].disbelief, 4),
-                        "uncertainty": round(opinions[i].uncertainty, 4),
+                        "belief": round(float(opinions[i].belief), 4),
+                        "disbelief": round(float(opinions[i].disbelief), 4),
+                        "uncertainty": round(float(opinions[i].uncertainty), 4),
                     },
                     "opinion_b": {
-                        "belief": round(opinions[j].belief, 4),
-                        "disbelief": round(opinions[j].disbelief, 4),
-                        "uncertainty": round(opinions[j].uncertainty, 4),
+                        "belief": round(float(opinions[j].belief), 4),
+                        "disbelief": round(float(opinions[j].disbelief), 4),
+                        "uncertainty": round(float(opinions[j].uncertainty), 4),
                     },
                 })
     return conflicts
@@ -105,9 +184,11 @@ def opinion_summary(op: Opinion) -> dict:
     }
 
 
-def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict]) -> dict:
+def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict],
+                       conflict: dict | None = None) -> dict:
     """Build a JSON-LD document for a scored claim."""
-    return {
+    proj = float(opinion.belief + opinion.base_rate * opinion.uncertainty)
+    doc = {
         "@context": {
             "@vocab": "https://schema.org/",
             "ex": "https://jsonld-ex.org/vocab#",
@@ -121,7 +202,7 @@ def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict]) -
             "ex:disbelief": round(float(opinion.disbelief), 4),
             "ex:uncertainty": round(float(opinion.uncertainty), 4),
             "ex:baseRate": round(float(opinion.base_rate), 4),
-            "ex:projectedProbability": round(float(opinion.belief + opinion.base_rate * opinion.uncertainty), 4),
+            "ex:projectedProbability": round(proj, 4),
         },
         "prov:wasGeneratedBy": {
             "@type": "prov:Activity",
@@ -130,3 +211,6 @@ def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict]) -
         },
         "ex:sources": sources,
     }
+    if conflict:
+        doc["ex:conflict"] = conflict
+    return doc

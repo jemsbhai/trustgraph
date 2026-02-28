@@ -8,9 +8,11 @@ import from byllm.lib { Model }
 import from tools.search { web_search }
 import from bridge.confidence {
     scalar_to_opinion,
+    flip_opinion,
     fuse_evidence,
     apply_trust_discount,
     detect_conflicts,
+    detect_conflicts_within_claim,
     opinion_summary,
     build_jsonld_claim
 }
@@ -179,6 +181,7 @@ walker TrustGraphAgent {
         all_opinions: list = [];
         all_conflicts: list = [];
         assessed_claims: list = [];
+        all_sources_per_claim: list = [];  # list of list of source dicts
 
         for ci in range(len(claim_nodes)) {
             claim = claim_nodes[ci];
@@ -194,6 +197,9 @@ walker TrustGraphAgent {
             evidence_opinions: list = [];
             supporting: list = [];
             contradicting: list = [];
+            supporting_opinions: list = [];
+            contradicting_opinions: list = [];
+            claim_sources: list = [];
 
             for ri in range(len(results)) {
                 r = results[ri];
@@ -236,10 +242,31 @@ walker TrustGraphAgent {
                     contradicting.append(ev.text);
                 }
 
+                # Track source for JSON-LD output
+                claim_sources.append({
+                    "title": r["title"],
+                    "url": r["url"],
+                    "trust_score": trust,
+                    "evidence": ev.text[:150],
+                    "supports": ev.supports_claim
+                });
+
                 # Build opinion with trust discount
-                raw_opinion = scalar_to_opinion(ev.confidence_raw, len(results));
+                # evidence_weight=1.0 per piece; fusion handles combining
+                raw_opinion = scalar_to_opinion(ev.confidence_raw);
                 discounted = apply_trust_discount(raw_opinion, trust);
-                evidence_opinions.append(discounted);
+
+                if ev.supports_claim {
+                    # Supporting: high confidence -> high belief in claim
+                    evidence_opinions.append(discounted);
+                    supporting_opinions.append(discounted);
+                } else {
+                    # Contradicting: high confidence in contradiction ->
+                    # high DISBELIEF in claim. Must flip b<->d.
+                    flipped = flip_opinion(discounted);
+                    evidence_opinions.append(flipped);
+                    contradicting_opinions.append(flipped);
+                }
 
                 print(f"        [{r['title'][:40]}] trust={trust} conf={ev.confidence_raw}");
             }
@@ -261,6 +288,22 @@ walker TrustGraphAgent {
                 print(f"      No evidence found.");
             }
 
+            # Detect within-claim conflicts (supporting vs contradicting evidence)
+            claim_conflict = detect_conflicts_within_claim(
+                supporting_opinions, contradicting_opinions, 0.2
+            );
+            if claim_conflict is not None {
+                all_conflicts.append({
+                    "claim": claim.text[:80],
+                    "conflict_degree": claim_conflict["conflict_degree"],
+                    "num_supporting": claim_conflict["num_supporting"],
+                    "num_contradicting": claim_conflict["num_contradicting"]
+                });
+                print(f"      ⚡ CONFLICT: {claim_conflict['num_supporting']} sources support, {claim_conflict['num_contradicting']} contradict (degree={claim_conflict['conflict_degree']})");
+            }
+
+            all_sources_per_claim.append(claim_sources);
+
             # Assess claim
             assessment = assess_claim(
                 claim.text,
@@ -274,17 +317,7 @@ walker TrustGraphAgent {
             print(f"      Assessment: {assessment[:100]}...\n");
         }
 
-        # Detect cross-claim conflicts
-        if len(all_opinions) > 1 {
-            conflicts = detect_conflicts(all_opinions, 0.15);
-            for conf in conflicts {
-                all_conflicts.append({
-                    "claims": [claim_nodes[conf["pair"][0]].text[:50],
-                               claim_nodes[conf["pair"][1]].text[:50]],
-                    "conflict_degree": conf["conflict_degree"]
-                });
-            }
-        }
+        # Conflicts already collected per-claim above (within-claim detection)
 
         # ── STEP 5: REPORT ──
         print(f"[5/5] REPORT — Generating summary...\n");
@@ -295,7 +328,11 @@ walker TrustGraphAgent {
         for ci in range(len(claim_nodes)) {
             c = claim_nodes[ci];
             if len(all_opinions) > ci {
-                jc = build_jsonld_claim(c.text, all_opinions[ci], []);
+                sources = [];
+                if len(all_sources_per_claim) > ci {
+                    sources = all_sources_per_claim[ci];
+                }
+                jc = build_jsonld_claim(c.text, all_opinions[ci], sources);
                 jsonld_claims.append(jc);
             }
         }
