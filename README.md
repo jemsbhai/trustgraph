@@ -394,6 +394,36 @@ This output is interoperable with the entire semantic web ecosystem: SPARQL quer
 
 ---
 
+## ⚙️ Configuration
+
+### Number of Claims
+
+By default, TrustGraph lets the LLM decide how many claims to decompose (typically 3-5). You can override this for faster demos or deeper research.
+
+**CLI:**
+```bash
+# Quick fact-check (2 claims, ~10 API calls)
+jac run trustgraph.jac --claims 2 "Is coffee good for your health?"
+
+# Default (3-5 claims, ~20 API calls)
+jac run trustgraph.jac "Is coffee good for your health?"
+
+# Deep research (7 claims, ~35 API calls)
+jac run trustgraph.jac --claims 7 "Is coffee good for your health?"
+```
+
+**Web UI:**
+
+Use the **Claims** slider next to the query input. Set to 0 for auto, or 2-8 for explicit control.
+
+| Claims | API Calls | Best For |
+|---|---|---|
+| 2-3 | ~15 | Quick fact-checks, live demos |
+| 4-5 (default) | ~25 | Balanced research |
+| 6-8 | ~35-50 | Deep due diligence, comprehensive reports |
+
+---
+
 ## 📚 References
 
 - Jøsang, A. (2016). *Subjective Logic: A Formalism for Reasoning Under Uncertainty.* Springer.
