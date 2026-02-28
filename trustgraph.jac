@@ -5,6 +5,7 @@ Uses Jaseci OSP (nodes/edges/walkers) + byLLM + jsonld-ex confidence algebra.
 """
 
 import from byllm.lib { Model }
+import from litellm { completion as litellm_completion }
 import from tools.search { web_search }
 import from bridge.confidence {
     scalar_to_opinion,
@@ -81,6 +82,58 @@ Each claim should be a concrete statement that can be checked against evidence.
 Return only the claims as a list of strings."""
 def decompose_query(question: str) -> list[str]
     by llm();
+
+def decompose_query_n(question: str, num_claims: int) -> list[str] {
+    """Decompose a question into exactly N verifiable claims using a manual LLM call."""
+    prompt = (
+        f"Given the following research question, decompose it into exactly {num_claims} "
+        f"specific, verifiable factual claims. Each claim should be a concrete statement "
+        f"that can be checked against evidence.\n\n"
+        f"Question: {question}\n\n"
+        f"Return ONLY a JSON array of {num_claims} strings. No markdown, no extra text.\n"
+        f'Example: ["Claim one here", "Claim two here"]'
+    );
+    response = litellm_completion(
+        model="gemini/gemini-2.5-flash",
+        messages=[{"role": "user", "content": prompt}]
+    );
+    raw = response.choices[0].message.content;
+    # Parse - handle markdown fences
+    cleaned = raw.strip();
+    if cleaned.startswith("```") {
+        first_nl = cleaned.find("\n");
+        if first_nl > 0 {
+            cleaned = cleaned[first_nl + 1:];
+        }
+        if cleaned.rstrip().endswith("```") {
+            cleaned = cleaned.rstrip()[:-3].rstrip();
+        }
+    }
+    try {
+        result = json.loads(cleaned);
+        if isinstance(result, list) {
+            return result;
+        }
+    } except Exception {
+        _pass = 0;
+    }
+    # Fallback: try to find array in raw
+    try {
+        start = raw.find("[");
+        end = raw.rfind("]");
+        if start >= 0 and end > start {
+            result = json.loads(raw[start:end + 1]);
+            if isinstance(result, list) {
+                return result;
+            }
+        }
+    } except Exception {
+        _pass = 0;
+    }
+    # Last resort: use byLLM default
+    print("      WARNING: Could not parse decompose response, falling back to byLLM.");
+    return decompose_query(question);
+}
 
 """Given a claim and text from a source, extract the key evidence.
 Return ONLY a valid JSON object (no markdown, no extra text) with these fields:
@@ -208,6 +261,7 @@ def estimate_source_trust(url: str, title: str) -> float {
 walker TrustGraphAgent {
     has query_text: str = "";
     has max_search_per_claim: int = 3;
+    has num_claims: int = 0;  # 0 = use byLLM default (3-5)
     has report: dict = {};
 
     can run with entry {
@@ -217,8 +271,13 @@ walker TrustGraphAgent {
         print(f"\n  Query: {self.query_text}\n");
 
         # ── STEP 1: PLAN ──
-        print("[1/5] PLAN — Decomposing query into verifiable claims...");
-        claims_text = decompose_query(self.query_text);
+        if self.num_claims > 0 {
+            print(f"[1/5] PLAN — Decomposing query into {self.num_claims} claims...");
+            claims_text = decompose_query_n(self.query_text, self.num_claims);
+        } else {
+            print("[1/5] PLAN — Decomposing query into verifiable claims...");
+            claims_text = decompose_query(self.query_text);
+        }
         print(f"      Found {len(claims_text)} claims to verify.\n");
 
         # Create Query node
@@ -442,6 +501,7 @@ walker TrustGraphAgent {
 with entry {
     import sys;
     query = "Is remote work more productive than office work?";
+    num_claims = 0;  # 0 = byLLM default (3-5)
 
     # Check for query file from UI
     import os;
@@ -454,11 +514,33 @@ with entry {
         }
     }
 
-    # CLI args override
-    if len(sys.argv) > 1 {
-        query = " ".join(sys.argv[1:]);
+    # Check for config file from UI (num_claims)
+    if os.path.exists("_config.json") {
+        try {
+            with open("_config.json", "r") as f {
+                config = json.loads(f.read());
+            }
+            if "num_claims" in config {
+                num_claims = int(config["num_claims"]);
+            }
+        } except Exception {
+            _pass = 0;
+        }
     }
 
-    agent = TrustGraphAgent(query_text=query);
+    # CLI args override
+    args = sys.argv[1:];
+    if "--claims" in args {
+        ci = args.index("--claims");
+        if ci + 1 < len(args) {
+            num_claims = int(args[ci + 1]);
+            args = args[:ci] + args[ci + 2:];
+        }
+    }
+    if len(args) > 0 {
+        query = " ".join(args);
+    }
+
+    agent = TrustGraphAgent(query_text=query, num_claims=num_claims);
     root spawn agent;
 }
