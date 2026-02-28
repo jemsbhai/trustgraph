@@ -1,0 +1,71 @@
+{
+  "@context": {
+    "@vocab": "https://schema.org/",
+    "ex": "https://jsonld-ex.org/vocab#",
+    "prov": "http://www.w3.org/ns/prov#"
+  },
+  "@type": "ex:TrustGraphReport",
+  "ex:query": "Does Miami culture mean people are always late?",
+  "ex:generatedAt": "2026-02-28 17:32:30.023771+00:00",
+  "ex:claims": [
+    {
+      "@type": "ex:VerifiedClaim",
+      "ex:claimText": "A statistically significant majority of Miami residents self-report arriving late to social gatherings more than 50% of the time.",
+      "ex:confidence": {
+        "@type": "ex:SubjectiveOpinion",
+        "ex:belief": 0.3831,
+        "ex:disbelief": 0.3831,
+        "ex:uncertainty": 0.2338,
+        "ex:baseRate": 0.5,
+        "ex:projectedProbability": 0.5
+      },
+      "prov:wasGeneratedBy": {
+        "@type": "prov:Activity",
+        "prov:wasAssociatedWith": "TrustGraph Agent",
+        "prov:endedAtTime": "2026-02-28T17:32:30.023771+00:00"
+      }
+    },
+    {
+      "@type": "ex:VerifiedClaim",
+      "ex:claimText": "Businesses in Miami report a higher average employee lateness rate compared to the national average.",
+      "ex:confidence": {
+        "@type": "ex:SubjectiveOpinion",
+        "ex:belief": 0.3831,
+        "ex:disbelief": 0.3831,
+        "ex:uncertainty": 0.2338,
+        "ex:baseRate": 0.5,
+        "ex:projectedProbability": 0.5
+      }
+    },
+    {
+      "@type": "ex:VerifiedClaim",
+      "ex:claimText": "Cultural studies or ethnographic research in Miami would identify a lower emphasis on strict punctuality in social norms compared to other major US cities.",
+      "ex:confidence": {
+        "@type": "ex:SubjectiveOpinion",
+        "ex:belief": 0.4309,
+        "ex:disbelief": 0.4309,
+        "ex:uncertainty": 0.1383,
+        "ex:baseRate": 0.5,
+        "ex:projectedProbability": 0.5
+      }
+    },
+    {
+      "@type": "ex:VerifiedClaim",
+      "ex:claimText": "Traffic data indicates that average travel times within Miami during peak hours frequently exceed scheduled durations, contributing to delays.",
+      "ex:confidence": {
+        "@type": "ex:SubjectiveOpinion",
+        "ex:belief": 0.3214,
+        "ex:disbelief": 0.3214,
+        "ex:uncertainty": 0.3571,
+        "ex:baseRate": 0.5,
+        "ex:projectedProbability": 0.5
+      }
+    }
+  ],
+  "ex:conflicts": [
+    { "claims": ["Miami residents self-report lateness", "Businesses report higher lateness"], "conflict_degree": 0.2935 },
+    { "claims": ["Miami residents self-report lateness", "Cultural studies on punctuality"], "conflict_degree": 0.3301 },
+    { "claims": ["Cultural studies on punctuality", "Traffic delays contribute to lateness"], "conflict_degree": 0.277 }
+  ],
+  "ex:summary": "The research provides limited support for the idea that Miami culture inherently means people are always late. Businesses in Miami-Dade and Broward counties actually report employee lateness rates below the national average, directly contradicting the notion. Instead, significant evidence points to severe peak-hour traffic delays as a major external factor."
+}
