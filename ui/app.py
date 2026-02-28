@@ -310,16 +310,29 @@ if run_clicked and query:
                     for s in sources:
                         title = s.get("title", "Unknown")
                         url = s.get("url", "")
+                        trust = s.get("trust_score", 0)
+                        supports = s.get("supports", True)
+                        icon = "✅" if supports else "❌"
+                        label = "supports" if supports else "contradicts"
                         if url:
-                            st.markdown(f'<span class="source-chip">📄 <a href="{url}">{title}</a></span>', unsafe_allow_html=True)
+                            st.markdown(
+                                f'<span class="source-chip">{icon} <a href="{url}">{title}</a> '
+                                f'(trust: {trust:.2f}, {label})</span>',
+                                unsafe_allow_html=True
+                            )
 
         # ── Conflicts ──
         if conflicts:
-            st.markdown("### ⚡ Conflicts Between Claims")
+            st.markdown("### ⚡ Evidence Conflicts")
             for conf in conflicts:
-                conf_claims = conf.get("claims", [])
+                claim_text = conf.get("claim", "")
                 degree = conf.get("conflict_degree", 0)
-                st.warning(f"**Conflict (degree: {degree:.3f}):** \"{conf_claims[0]}\" ↔ \"{conf_claims[1]}\"")
+                n_sup = conf.get("num_supporting", 0)
+                n_con = conf.get("num_contradicting", 0)
+                st.warning(
+                    f"**Conflict (degree: {degree:.3f})** in: \"{claim_text}\"\n\n"
+                    f"{n_sup} source(s) support vs {n_con} source(s) contradict"
+                )
 
         # ── JSON-LD Output ──
         st.markdown("### 📦 JSON-LD Output (Machine-Readable)")
