@@ -198,18 +198,6 @@ jac run trustgraph.jac
 ```
 Runs the default query and prints results to terminal. Edit `_query.txt` to change the question.
 
----
-
-## 🎥 Demo Walkthrough (2-3 minutes)
-
-1. **[0:00]** Launch `streamlit run ui/app.py` → "TrustGraph doesn't just search — it *verifies*."
-2. **[0:15]** Type: "Is remote work more productive than office work?" → click **Verify**
-3. **[0:30]** Watch the agent log stream in real-time: decomposing claims, searching sources, extracting evidence
-4. **[1:00]** Point out the metrics dashboard: claims verified, supported/contested/refuted counts, conflicts detected
-5. **[1:30]** Expand a claim: show the **opinion bar** (green=belief, red=disbelief, gray=uncertainty), the projected probability, the verdict
-6. **[1:45]** Show a conflict: "Source A (Fed Reserve) says productivity increased. Source B says collaboration suffered. Conflict degree: 0.33"
-7. **[2:00]** Expand the JSON-LD output: "Every fact has provenance. Every confidence is mathematically derived using Subjective Logic. This output is valid JSON-LD — queryable with SPARQL, validatable with SHACL."
-8. **[2:30]** Close: "Most agents hallucinate confidently. TrustGraph makes confidence *explicit, mathematical, and auditable.*"
 
 ---
 
@@ -411,4 +399,4 @@ MIT
 
 ## 👥 Team
 
-Built at the **Velric Miami Hackathon 2026** — Agentic AI Track.
+Built at the **Velric Miami Hackathon 2026** by Fifi and Muntaser — Agentic AI Track.
