@@ -130,15 +130,17 @@ def verdict_emoji(verdict):
 # Project root is one level up from ui/
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-def run_agent(query):
+def run_agent(query, num_claims=0):
     """Run the TrustGraph Jac agent as a subprocess."""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
     cmd = ["jac", "run", "trustgraph.jac"]
 
-    # Write the query to a temp file so we can pass it cleanly
+    # Write the query and config
     with open(os.path.join(PROJECT_ROOT, "_query.txt"), "w", encoding="utf-8") as f:
         f.write(query)
+    with open(os.path.join(PROJECT_ROOT, "_config.json"), "w", encoding="utf-8") as f:
+        json.dump({"num_claims": num_claims}, f)
 
     process = subprocess.Popen(
         cmd,
@@ -158,7 +160,7 @@ def run_agent(query):
 
 
 # ── Input ──
-col1, col2 = st.columns([4, 1])
+col1, col2, col3 = st.columns([4, 1, 1])
 with col1:
     query = st.text_input(
         "Enter a research question or claim to verify:",
@@ -166,6 +168,9 @@ with col1:
         key="query_input",
     )
 with col2:
+    num_claims = st.slider("Claims", min_value=0, max_value=8, value=0,
+                           help="0 = auto (3-5). Set 2-3 for quick checks, 6-8 for deep research.")
+with col3:
     st.write("")  # spacing
     st.write("")
     run_clicked = st.button("🚀 Verify", type="primary", use_container_width=True)
@@ -209,7 +214,7 @@ if run_clicked and query:
         "[5/5]": 0.90,
     }
 
-    for line in run_agent(query):
+    for line in run_agent(query, num_claims):
         log_lines.append(line)
         # Update progress based on step markers
         for marker, pct in step_map.items():

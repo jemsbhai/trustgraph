@@ -15,6 +15,7 @@ build/
 
 # Temp files
 _query.txt
+_config.json
 output.json
 *.log
 
