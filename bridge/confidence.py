@@ -1,8 +1,5 @@
 """TrustGraph confidence bridge — jsonld-ex Subjective Logic integration."""
 
-import sys
-sys.path.insert(0, r"E:\data\code\claudecode\jsonld\jsonld-ex\packages\python\src")
-
 from jsonld_ex.confidence_algebra import (
     Opinion,
     cumulative_fuse,
@@ -11,6 +8,13 @@ from jsonld_ex.confidence_algebra import (
     conflict_metric,
 )
 from jsonld_ex.confidence_bridge import combine_opinions_from_scalars
+from jsonld_ex.confidence_byzantine import (
+    byzantine_fuse,
+    ByzantineConfig,
+    ByzantineFusionReport,
+    cohesion_score,
+    opinion_distance,
+)
 from datetime import datetime, timezone
 from typing import Any
 
@@ -76,6 +80,82 @@ def fuse_evidence(opinions: list[Opinion]) -> Opinion:
     return result
 
 
+def fuse_evidence_byzantine(
+    opinions: list[Opinion],
+    trust_weights: list[float] | None = None,
+    threshold: float = 0.15,
+    min_agents: int = 2,
+) -> dict:
+    """Fuse evidence opinions with Byzantine-resistant filtering.
+
+    Uses the "combined" strategy: discord × (1 − trust), which
+    prioritizes removal of sources that are both highly discordant
+    AND lowly trusted.
+
+    Falls back to regular cumulative fusion when fewer than 3 opinions
+    are provided (Byzantine filtering needs at least 3 to be meaningful).
+
+    Args:
+        opinions:      List of per-evidence opinions (already trust-discounted
+                       and flipped for contradicting evidence).
+        trust_weights: Per-opinion source trust scores in [0, 1]. Must match
+                       length of opinions. Required for Byzantine filtering;
+                       ignored when falling back to regular fusion.
+        threshold:     Discord score above which an agent may be removed.
+        min_agents:    Never reduce below this many evidence pieces.
+
+    Returns:
+        Dict with keys:
+            fused:             The final fused Opinion.
+            filtered:          List of dicts describing removed evidence
+                               (index, opinion, discord_score, reason).
+            cohesion:          Cohesion score of surviving evidence [0, 1].
+            surviving_indices: Indices of opinions that survived filtering.
+            used_byzantine:    Whether Byzantine filtering was applied.
+    """
+    # Fallback: too few opinions for Byzantine filtering
+    if len(opinions) < 3 or trust_weights is None:
+        fused = fuse_evidence(opinions)
+        return {
+            "fused": fused,
+            "filtered": [],
+            "cohesion": cohesion_score(opinions) if len(opinions) > 1 else 1.0,
+            "surviving_indices": list(range(len(opinions))),
+            "used_byzantine": False,
+        }
+
+    config = ByzantineConfig(
+        strategy="combined",
+        trust_weights=trust_weights,
+        threshold=threshold,
+        min_agents=min_agents,
+    )
+
+    report: ByzantineFusionReport = byzantine_fuse(opinions, config=config)
+
+    filtered = [
+        {
+            "index": removal.index,
+            "opinion": {
+                "belief": round(float(removal.opinion.belief), 4),
+                "disbelief": round(float(removal.opinion.disbelief), 4),
+                "uncertainty": round(float(removal.opinion.uncertainty), 4),
+            },
+            "discord_score": round(float(removal.discord_score), 4),
+            "reason": removal.reason,
+        }
+        for removal in report.removed
+    ]
+
+    return {
+        "fused": report.fused,
+        "filtered": filtered,
+        "cohesion": round(float(report.cohesion_score), 4),
+        "surviving_indices": report.surviving_indices,
+        "used_byzantine": True,
+    }
+
+
 def apply_trust_discount(opinion: Opinion, source_trust: float) -> Opinion:
     """Discount an opinion by the trustworthiness of its source.
 
@@ -119,10 +199,14 @@ def detect_conflicts_within_claim(
 
     # Measure conflict between the two sides
     conf = pairwise_conflict(fused_for, fused_against)
+    # opinion_distance is a proper metric (d(A,A)=0, triangle inequality)
+    # and complements pairwise_conflict for reporting how far apart the sides are
+    dist = opinion_distance(fused_for, fused_against)
 
     if conf > threshold:
         return {
             "conflict_degree": round(float(conf), 4),
+            "opinion_distance": round(float(dist), 4),
             "supporting_opinion": {
                 "belief": round(float(fused_for.belief), 4),
                 "disbelief": round(float(fused_for.disbelief), 4),
@@ -184,9 +268,24 @@ def opinion_summary(op: Opinion) -> dict:
     }
 
 
-def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict],
-                       conflict: dict | None = None) -> dict:
-    """Build a JSON-LD document for a scored claim."""
+def build_jsonld_claim(
+    claim_text: str,
+    opinion: Opinion,
+    sources: list[dict],
+    conflict: dict | None = None,
+    cohesion: float | None = None,
+    filtered_evidence: list[dict] | None = None,
+) -> dict:
+    """Build a JSON-LD document for a scored claim.
+
+    Args:
+        claim_text:        The claim text.
+        opinion:           Fused opinion for the claim.
+        sources:           List of source dicts.
+        conflict:          Conflict report from detect_conflicts_within_claim().
+        cohesion:          Cohesion score of surviving evidence [0, 1].
+        filtered_evidence: List of evidence pieces removed by Byzantine filtering.
+    """
     proj = float(opinion.belief + opinion.base_rate * opinion.uncertainty)
     doc = {
         "@context": {
@@ -213,4 +312,23 @@ def build_jsonld_claim(claim_text: str, opinion: Opinion, sources: list[dict],
     }
     if conflict:
         doc["ex:conflict"] = conflict
+    if cohesion is not None:
+        doc["ex:cohesion"] = round(float(cohesion), 4)
+        doc["ex:distanceMetric"] = "euclidean"
+    if filtered_evidence:
+        doc["ex:filteredEvidence"] = filtered_evidence
     return doc
+
+
+def mean_cohesion(cohesion_scores: list[float]) -> float:
+    """Compute mean cohesion across all claims in a report.
+
+    Args:
+        cohesion_scores: Per-claim cohesion values from fuse_evidence_byzantine().
+
+    Returns:
+        Mean cohesion in [0, 1]. Returns 1.0 for empty list (no claims = no disagreement).
+    """
+    if not cohesion_scores:
+        return 1.0
+    return round(sum(cohesion_scores) / len(cohesion_scores), 4)
