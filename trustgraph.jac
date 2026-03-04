@@ -264,6 +264,7 @@ walker TrustGraphAgent {
     has query_text: str = "";
     has max_search_per_claim: int = 3;
     has num_claims: int = 0;  # 0 = use byLLM default (3-5)
+    has enable_byzantine: bool = True;  # default on for hackathon demo
     has report: dict = {};
 
     can run with entry {
@@ -393,13 +394,25 @@ walker TrustGraphAgent {
             claim_cohesion = 1.0;
             claim_filtered: list = [];
             if len(evidence_opinions) > 0 {
-                byz_result = fuse_evidence_byzantine(
-                    evidence_opinions,
-                    trust_weights=evidence_trust_weights
-                );
-                fused = byz_result["fused"];
-                claim_cohesion = byz_result["cohesion"];
-                claim_filtered = byz_result["filtered"];
+                if self.enable_byzantine {
+                    byz_result = fuse_evidence_byzantine(
+                        evidence_opinions,
+                        trust_weights=evidence_trust_weights
+                    );
+                    fused = byz_result["fused"];
+                    claim_cohesion = byz_result["cohesion"];
+                    claim_filtered = byz_result["filtered"];
+
+                    if byz_result["used_byzantine"] {
+                        print(f"      Byzantine: cohesion={claim_cohesion}, filtered={len(claim_filtered)} sources");
+                        for flt in claim_filtered {
+                            print(f"        Removed #{flt['index']}: {flt['reason']}");
+                        }
+                    }
+                } else {
+                    fused = fuse_evidence(evidence_opinions);
+                    print(f"      Mode: standard cumulative fusion (Byzantine off)");
+                }
 
                 summary = opinion_summary(fused);
                 claim.confidence = summary["projected_probability"];
@@ -409,12 +422,6 @@ walker TrustGraphAgent {
 
                 print(f"      Result: {summary['verdict']} (P={summary['projected_probability']})");
                 print(f"      Opinion: b={summary['belief']} d={summary['disbelief']} u={summary['uncertainty']}");
-                if byz_result["used_byzantine"] {
-                    print(f"      Byzantine: cohesion={claim_cohesion}, filtered={len(claim_filtered)} sources");
-                    for flt in claim_filtered {
-                        print(f"        Removed #{flt['index']}: {flt['reason']}");
-                    }
-                }
             } else {
                 claim.status = "no_evidence";
                 print(f"      No evidence found.");
@@ -534,6 +541,7 @@ with entry {
     import sys;
     query = "Is remote work more productive than office work?";
     num_claims = 0;  # 0 = byLLM default (3-5)
+    enable_byzantine = True;  # default on for hackathon demo
 
     # Check for query file from UI
     import os;
@@ -555,6 +563,9 @@ with entry {
             if "num_claims" in config {
                 num_claims = int(config["num_claims"]);
             }
+            if "enable_byzantine" in config {
+                enable_byzantine = bool(config["enable_byzantine"]);
+            }
         } except Exception {
             _pass = 0;
         }
@@ -569,10 +580,14 @@ with entry {
             args = args[:ci] + args[ci + 2:];
         }
     }
+    if "--no-byzantine" in args {
+        enable_byzantine = False;
+        args = [a for a in args if a != "--no-byzantine"];
+    }
     if len(args) > 0 {
         query = " ".join(args);
     }
 
-    agent = TrustGraphAgent(query_text=query, num_claims=num_claims);
+    agent = TrustGraphAgent(query_text=query, num_claims=num_claims, enable_byzantine=enable_byzantine);
     root spawn agent;
 }

@@ -168,7 +168,7 @@ def render_cohesion_bar(cohesion):
 # Project root is one level up from ui/
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
-def run_agent(query, num_claims=0):
+def run_agent(query, num_claims=0, enable_byzantine=True):
     """Run the TrustGraph Jac agent as a subprocess."""
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
@@ -178,7 +178,7 @@ def run_agent(query, num_claims=0):
     with open(os.path.join(PROJECT_ROOT, "_query.txt"), "w", encoding="utf-8") as f:
         f.write(query)
     with open(os.path.join(PROJECT_ROOT, "_config.json"), "w", encoding="utf-8") as f:
-        json.dump({"num_claims": num_claims}, f)
+        json.dump({"num_claims": num_claims, "enable_byzantine": enable_byzantine}, f)
 
     process = subprocess.Popen(
         cmd,
@@ -196,6 +196,16 @@ def run_agent(query, num_claims=0):
 
     process.wait()
 
+
+# ── Sidebar Settings ──
+with st.sidebar:
+    st.markdown("### ⚙️ Settings")
+    enable_byzantine = st.checkbox(
+        "Byzantine Filtering",
+        value=True,
+        help="Remove highly discordant, low-trust sources before fusion. "
+             "Uncheck to use standard cumulative fusion and see all evidence.",
+    )
 
 # ── Input ──
 col1, col2, col3 = st.columns([4, 1, 1])
@@ -252,7 +262,7 @@ if run_clicked and query:
         "[5/5]": 0.90,
     }
 
-    for line in run_agent(query, num_claims):
+    for line in run_agent(query, num_claims, enable_byzantine):
         log_lines.append(line)
         # Update progress based on step markers
         for marker, pct in step_map.items():

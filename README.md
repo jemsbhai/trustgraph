@@ -57,10 +57,10 @@ You ask: "Is remote work more productive than office work?"
                     ▼
         ┌───────────────────────┐
    [4]  │  SCORE                │  Subjective Logic algebra:
-        │  (jsonld-ex)          │  • Scalar → opinion tuple (b,d,u,a)
+        │  (jsonld-ex 0.7.0)    │  • Scalar → opinion tuple (b,d,u,a)
         │                       │  • Trust discount by source quality
-        │                       │  • Cumulative fusion across sources
-        │                       │  • Pairwise conflict detection
+        │                       │  • Byzantine-resistant fusion
+        │                       │  • Cohesion scoring & conflict detection
         └───────────┬───────────┘
                     ▼
         ┌───────────────────────┐
@@ -138,6 +138,16 @@ Conflict degree: 0.84 (severe disagreement)
 
 This surfaces in the report as a flagged conflict — the user sees exactly where the evidence is split and can investigate further.
 
+### Byzantine-Resistant Fusion (jsonld-ex 0.7.0)
+
+Open web sources can be spammy, SEO-gamed, or outright wrong. TrustGraph uses **Byzantine-resistant fusion** to automatically identify and remove discordant, low-trust sources before they pollute the final opinion.
+
+The `combined` strategy scores each source by `discord × (1 − trust)` — sources that are both highly discordant AND lowly trusted get removed first. The system also computes a **cohesion score** (0–1) measuring overall source agreement: 1.0 means perfect consensus, values below 0.5 indicate serious disagreement.
+
+After filtering, the surviving sources are fused via standard cumulative fusion, yielding a cleaner, more robust opinion.
+
+Byzantine filtering is **on by default** for the hackathon demo (toggle it off via the sidebar checkbox or `--no-byzantine` CLI flag to compare results).
+
 ---
 
 ## What This Means For Real-World Use Cases
@@ -205,11 +215,12 @@ Runs the default query and prints results to terminal. Edit `_query.txt` to chan
 1. **[0:00]** Launch `streamlit run ui/app.py` → "TrustGraph doesn't just search — it *verifies*."
 2. **[0:15]** Type: "Is remote work more productive than office work?" → click **Verify**
 3. **[0:30]** Watch the agent log stream in real-time: decomposing claims, searching sources, extracting evidence
-4. **[1:00]** Point out the metrics dashboard: claims verified, supported/contested/refuted counts, conflicts detected
-5. **[1:30]** Expand a claim: show the **opinion bar** (green=belief, red=disbelief, gray=uncertainty), the projected probability, the verdict
-6. **[1:45]** Show a conflict: "Source A (Fed Reserve) says productivity increased. Source B says collaboration suffered. Conflict degree: 0.33"
-7. **[2:00]** Expand the JSON-LD output: "Every fact has provenance. Every confidence is mathematically derived using Subjective Logic. This output is valid JSON-LD — queryable with SPARQL, validatable with SHACL."
-8. **[2:30]** Close: "Most agents hallucinate confidently. TrustGraph makes confidence *explicit, mathematical, and auditable.*"
+4. **[1:00]** Point out the metrics dashboard: claims verified, supported/contested/refuted counts, conflicts detected, **mean cohesion**
+5. **[1:30]** Expand a claim: show the **opinion bar** (green=belief, red=disbelief, gray=uncertainty), the **cohesion bar** (source agreement), and any **filtered evidence badges** (Byzantine removals)
+6. **[1:45]** Show a conflict: "Source A (Fed Reserve) says productivity increased. Source B says collaboration suffered. Conflict degree: 0.33, opinion distance: 0.72"
+7. **[2:00]** Toggle **Byzantine Filtering** off in the sidebar, re-run the same query — show how the outlier source now affects the score
+8. **[2:15]** Expand the JSON-LD output: "Every fact has provenance. Every confidence is mathematically derived using Subjective Logic. This output is valid JSON-LD — queryable with SPARQL, validatable with SHACL."
+9. **[2:30]** Close: "Most agents hallucinate confidently. TrustGraph makes confidence *explicit, mathematical, and auditable.*"
 
 ---
 
@@ -231,10 +242,11 @@ Runs the default query and prints results to terminal. Edit `_query.txt` to chan
 │  ReportNode         HasEvidence        • Score (jsonld-ex)│
 │                     HasClaim           • Report (byLLM)   │
 ├──────────────────────────────────────────────────────────┤
-│            jsonld-ex Confidence Algebra Bridge            │
+│          jsonld-ex 0.7.0 Confidence Algebra Bridge        │
 │                                                          │
-│  scalar_to_opinion() → fuse_evidence()                   │
+│  scalar_to_opinion() → fuse_evidence_byzantine()         │
 │  apply_trust_discount() → detect_conflicts()             │
+│  cohesion_score() → opinion_distance()                   │
 │  opinion_summary() → build_jsonld_claim()                │
 ├──────────────────────────────────────────────────────────┤
 │               External Tools                             │
@@ -252,9 +264,10 @@ trustgraph/
 ├── trustgraph.jac           # Core agent: OSP graph model + walker + 5 byLLM functions
 ├── bridge/
 │   ├── __init__.py
-│   └── confidence.py        # jsonld-ex Subjective Logic integration
-│                             #   scalar_to_opinion, fuse_evidence,
+│   └── confidence.py        # jsonld-ex 0.7.0 Subjective Logic integration
+│                             #   scalar_to_opinion, fuse_evidence_byzantine,
 │                             #   apply_trust_discount, detect_conflicts,
+│                             #   cohesion_score, opinion_distance,
 │                             #   opinion_summary, build_jsonld_claim
 ├── tools/
 │   ├── __init__.py
@@ -387,7 +400,7 @@ This output is interoperable with the entire semantic web ecosystem: SPARQL quer
 |---|---|---|
 | **Graph Runtime** | Jaseci OSP (nodes, edges, walkers) | Knowledge graph modeling + agentic traversal |
 | **LLM Integration** | byLLM (`by llm()`) + Gemini via LiteLLM | Claim decomposition, evidence extraction, synthesis |
-| **Confidence Scoring** | jsonld-ex Subjective Logic (Jøsang 2016) | Opinion tuples, cumulative fusion, trust discount, conflict detection |
+| **Confidence Scoring** | jsonld-ex 0.7.0 Subjective Logic (Jøsang 2016) | Opinion tuples, Byzantine-resistant fusion, trust discount, cohesion scoring, conflict detection |
 | **Provenance** | jsonld-ex + PROV-O vocabulary | Source tracking, attribution chains |
 | **Web Search** | Tavily API | Real-time web evidence retrieval |
 | **Web UI** | Streamlit | Interactive dashboard with live progress |
@@ -421,6 +434,23 @@ Use the **Claims** slider next to the query input. Set to 0 for auto, or 2-8 for
 | 2-3 | ~15 | Quick fact-checks, live demos |
 | 4-5 (default) | ~25 | Balanced research |
 | 6-8 | ~35-50 | Deep due diligence, comprehensive reports |
+
+### Byzantine Filtering
+
+Byzantine-resistant fusion is **on by default**. It removes highly discordant, low-trust sources before evidence fusion, improving robustness against spammy or adversarial web content.
+
+**CLI:**
+```bash
+# Default (Byzantine on)
+jac run trustgraph.jac "Is coffee good for your health?"
+
+# Disable Byzantine filtering (standard cumulative fusion)
+jac run trustgraph.jac --no-byzantine "Is coffee good for your health?"
+```
+
+**Web UI:**
+
+Toggle the **Byzantine Filtering** checkbox in the sidebar (⚙️ Settings). This is great for live demos — run the same query with and without filtering to show the difference.
 
 ---
 
