@@ -11,11 +11,13 @@ import from bridge.confidence {
     scalar_to_opinion,
     flip_opinion,
     fuse_evidence,
+    fuse_evidence_byzantine,
     apply_trust_discount,
     detect_conflicts,
     detect_conflicts_within_claim,
     opinion_summary,
-    build_jsonld_claim
+    build_jsonld_claim,
+    mean_cohesion
 }
 import json;
 import re;
@@ -83,8 +85,8 @@ Return only the claims as a list of strings."""
 def decompose_query(question: str) -> list[str]
     by llm();
 
+"""Decompose a question into exactly N verifiable claims using a manual LLM call."""
 def decompose_query_n(question: str, num_claims: int) -> list[str] {
-    """Decompose a question into exactly N verifiable claims using a manual LLM call."""
     prompt = (
         f"Given the following research question, decompose it into exactly {num_claims} "
         f"specific, verifiable factual claims. Each claim should be a concrete statement "
@@ -166,8 +168,8 @@ def claim_to_search_query(claim: str) -> str
 # JSON Parsing Helper
 # ──────────────────────────────────────────────
 
+"""Robustly parse LLM evidence output, handling markdown fences and extra text."""
 def parse_evidence_json(raw: str) -> dict {
-    """Robustly parse LLM evidence output, handling markdown fences and extra text."""
     defaults = {"evidence": raw, "supports": True, "relevance": 0.5, "confidence": 0.5};
 
     # Sanitize: replace non-breaking spaces and other unicode whitespace
@@ -223,8 +225,8 @@ def parse_evidence_json(raw: str) -> dict {
 # Source Trust Heuristic
 # ──────────────────────────────────────────────
 
+"""Heuristic trust scoring based on source domain."""
 def estimate_source_trust(url: str, title: str) -> float {
-    """Heuristic trust scoring based on source domain."""
     url_lower = url.lower();
 
     # Academic & government sources
@@ -300,6 +302,8 @@ walker TrustGraphAgent {
         all_conflicts: list = [];
         assessed_claims: list = [];
         all_sources_per_claim: list = [];
+        all_cohesion_scores: list = [];
+        all_filtered_evidence: list = [];
 
         for ci in range(len(claim_nodes)) {
             claim = claim_nodes[ci];
@@ -313,6 +317,7 @@ walker TrustGraphAgent {
             # ── STEP 3: EXTRACT ──
             print(f"[3/5] EXTRACT — Analyzing evidence...");
             evidence_opinions: list = [];
+            evidence_trust_weights: list = [];
             supporting: list = [];
             contradicting: list = [];
             supporting_opinions: list = [];
@@ -370,10 +375,12 @@ walker TrustGraphAgent {
 
                 if ev.supports_claim {
                     evidence_opinions.append(discounted);
+                    evidence_trust_weights.append(trust);
                     supporting_opinions.append(discounted);
                 } else {
                     flipped = flip_opinion(discounted);
                     evidence_opinions.append(flipped);
+                    evidence_trust_weights.append(trust);
                     contradicting_opinions.append(flipped);
                 }
 
@@ -383,8 +390,17 @@ walker TrustGraphAgent {
 
             # ── STEP 4: SCORE ──
             print(f"[4/5] SCORE — Fusing evidence with Subjective Logic...");
+            claim_cohesion = 1.0;
+            claim_filtered: list = [];
             if len(evidence_opinions) > 0 {
-                fused = fuse_evidence(evidence_opinions);
+                byz_result = fuse_evidence_byzantine(
+                    evidence_opinions,
+                    trust_weights=evidence_trust_weights
+                );
+                fused = byz_result["fused"];
+                claim_cohesion = byz_result["cohesion"];
+                claim_filtered = byz_result["filtered"];
+
                 summary = opinion_summary(fused);
                 claim.confidence = summary["projected_probability"];
                 claim.status = summary["verdict"];
@@ -393,10 +409,18 @@ walker TrustGraphAgent {
 
                 print(f"      Result: {summary['verdict']} (P={summary['projected_probability']})");
                 print(f"      Opinion: b={summary['belief']} d={summary['disbelief']} u={summary['uncertainty']}");
+                if byz_result["used_byzantine"] {
+                    print(f"      Byzantine: cohesion={claim_cohesion}, filtered={len(claim_filtered)} sources");
+                    for flt in claim_filtered {
+                        print(f"        Removed #{flt['index']}: {flt['reason']}");
+                    }
+                }
             } else {
                 claim.status = "no_evidence";
                 print(f"      No evidence found.");
             }
+            all_cohesion_scores.append(claim_cohesion);
+            all_filtered_evidence.append(claim_filtered);
 
             # Detect within-claim conflicts
             claim_conflict = detect_conflicts_within_claim(
@@ -406,6 +430,7 @@ walker TrustGraphAgent {
                 all_conflicts.append({
                     "claim": claim.text[:80],
                     "conflict_degree": claim_conflict["conflict_degree"],
+                    "opinion_distance": claim_conflict["opinion_distance"],
                     "num_supporting": claim_conflict["num_supporting"],
                     "num_contradicting": claim_conflict["num_contradicting"]
                 });
@@ -440,7 +465,13 @@ walker TrustGraphAgent {
                 if len(all_sources_per_claim) > ci {
                     sources = all_sources_per_claim[ci];
                 }
-                jc = build_jsonld_claim(c.text, all_opinions[ci], sources);
+                claim_coh = all_cohesion_scores[ci] if ci < len(all_cohesion_scores) else None;
+                claim_flt = all_filtered_evidence[ci] if ci < len(all_filtered_evidence) else [];
+                jc = build_jsonld_claim(
+                    c.text, all_opinions[ci], sources,
+                    cohesion=claim_coh,
+                    filtered_evidence=claim_flt
+                );
                 jsonld_claims.append(jc);
             }
         }
@@ -456,6 +487,7 @@ walker TrustGraphAgent {
             "ex:generatedAt": str(datetime.now(timezone.utc)),
             "ex:claims": jsonld_claims,
             "ex:conflicts": all_conflicts,
+            "ex:meanCohesion": mean_cohesion(all_cohesion_scores),
             "ex:summary": summary_text
         };
 

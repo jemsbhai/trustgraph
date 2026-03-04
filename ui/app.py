@@ -90,6 +90,27 @@ st.markdown("""
         max-height: 500px;
         overflow-y: auto;
     }
+    .cohesion-bar-bg {
+        height: 20px;
+        border-radius: 10px;
+        background: #e0e0e0;
+        overflow: hidden;
+        margin: 6px 0;
+    }
+    .cohesion-bar-fill {
+        height: 100%;
+        border-radius: 10px;
+        transition: width 0.3s;
+    }
+    .filtered-badge {
+        display: inline-block;
+        background: #fce4ec;
+        color: #c62828;
+        padding: 4px 10px;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        margin: 2px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -125,6 +146,23 @@ def verdict_emoji(verdict):
     elif verdict == "refuted":
         return "❌"
     return "❓"
+
+
+def render_cohesion_bar(cohesion):
+    """Render a cohesion bar: green for high agreement, red for low."""
+    pct = cohesion * 100
+    if cohesion >= 0.8:
+        color = "#00c853"
+    elif cohesion >= 0.5:
+        color = "#ff9100"
+    else:
+        color = "#ff1744"
+    return f"""
+    <div style="font-size:0.8rem; color:#888; margin-top:8px;">Source Agreement (Cohesion): {cohesion:.3f}</div>
+    <div class="cohesion-bar-bg">
+        <div class="cohesion-bar-fill" style="width:{pct}%; background:{color};"></div>
+    </div>
+    """
 
 
 # Project root is one level up from ui/
@@ -247,7 +285,9 @@ if run_clicked and query:
         contested = sum(1 for c in claims if 0.3 < c.get("ex:confidence", {}).get("ex:projectedProbability", 0) < 0.7)
         refuted = sum(1 for c in claims if c.get("ex:confidence", {}).get("ex:projectedProbability", 0) <= 0.3)
 
-        m1, m2, m3, m4 = st.columns(4)
+        mean_coh = report.get("ex:meanCohesion", None)
+
+        m1, m2, m3, m4, m5 = st.columns(5)
         with m1:
             st.markdown(f"""<div class="metric-box">
                 <div class="metric-value">{len(claims)}</div>
@@ -267,6 +307,13 @@ if run_clicked and query:
             st.markdown(f"""<div class="metric-box">
                 <div class="metric-value" style="color:#ff1744">{len(conflicts)}</div>
                 <div class="metric-label">Conflicts</div>
+            </div>""", unsafe_allow_html=True)
+        with m5:
+            coh_display = f"{mean_coh:.3f}" if mean_coh is not None else "N/A"
+            coh_color = "#00c853" if mean_coh and mean_coh >= 0.8 else "#ff9100" if mean_coh and mean_coh >= 0.5 else "#ff1744"
+            st.markdown(f"""<div class="metric-box">
+                <div class="metric-value" style="color:{coh_color}">{coh_display}</div>
+                <div class="metric-label">Mean Cohesion</div>
             </div>""", unsafe_allow_html=True)
 
         st.markdown("")
@@ -308,6 +355,11 @@ if run_clicked and query:
                 with c2:
                     st.metric("Verdict", verdict.upper())
 
+                # Cohesion bar
+                claim_cohesion = claim.get("ex:cohesion", None)
+                if claim_cohesion is not None:
+                    st.markdown(render_cohesion_bar(claim_cohesion), unsafe_allow_html=True)
+
                 # Sources
                 sources = claim.get("ex:sources", [])
                 if sources:
@@ -326,16 +378,31 @@ if run_clicked and query:
                                 unsafe_allow_html=True
                             )
 
+                # Filtered evidence (Byzantine removal)
+                filtered = claim.get("ex:filteredEvidence", [])
+                if filtered:
+                    st.markdown("**Filtered Evidence (Byzantine):**")
+                    for flt in filtered:
+                        reason = flt.get("reason", "unknown")
+                        discord = flt.get("discord_score", 0)
+                        st.markdown(
+                            f'<span class="filtered-badge">🚫 Source #{flt.get("index", "?")} removed — '
+                            f'discord: {discord:.3f}, {reason}</span>',
+                            unsafe_allow_html=True
+                        )
+
         # ── Conflicts ──
         if conflicts:
             st.markdown("### ⚡ Evidence Conflicts")
             for conf in conflicts:
                 claim_text = conf.get("claim", "")
                 degree = conf.get("conflict_degree", 0)
+                dist = conf.get("opinion_distance", None)
                 n_sup = conf.get("num_supporting", 0)
                 n_con = conf.get("num_contradicting", 0)
+                dist_str = f" | distance: {dist:.3f}" if dist is not None else ""
                 st.warning(
-                    f"**Conflict (degree: {degree:.3f})** in: \"{claim_text}\"\n\n"
+                    f"**Conflict (degree: {degree:.3f}{dist_str})** in: \"{claim_text}\"\n\n"
                     f"{n_sup} source(s) support vs {n_con} source(s) contradict"
                 )
 
